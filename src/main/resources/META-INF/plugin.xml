@@ -1,0 +1,51 @@
+<idea-plugin>
+    <id>dev.petalnet.umldoclet</id>
+    <name>UMLDoclet UML</name>
+    <vendor url="https://github.com/PetalNet/umldoclet-intellij">PetalNet</vendor>
+
+    <description><![CDATA[
+    <p>Generates PlantUML class and package diagrams from Java sources with
+    <a href="https://github.com/talsma-ict/umldoclet">UMLDoclet</a>, straight from the Project view or the editor.</p>
+
+    <p><b>What:</b> right-click a Java file, package or source folder and pick <i>Generate UML (UMLDoclet)</i>.
+    The plugin runs your project SDK's own <code>javadoc</code> with the bundled UMLDoclet 2.3.2, keeps only the
+    generated <code>.puml</code> files (package layout preserved) in <code>build/uml/</code>, and opens the most
+    relevant diagram.</p>
+
+    <p><b>Why:</b> UMLDoclet emits field associations (<code>Person --> Job</code>,
+    <code>Person --> "*" Hobby</code>), not just inheritance, so the diagram shows how classes actually relate.</p>
+
+    <p><b>How it renders:</b> this plugin has no renderer of its own. Install
+    <a href="https://plugins.jetbrains.com/plugin/7017-plantuml-integration">PlantUML Integration</a> (plantuml4idea)
+    to preview the <code>.puml</code> files; you'll get a hint if it is missing.</p>
+
+    <p><b>Settings</b> (Tools &gt; UMLDoclet): output folder, include private members, and an option to draw field
+    associations as composition (<code>*--></code>). Caveat: Java cannot express ownership, so that option is a
+    blanket rewrite of every field association, not an analysis.</p>
+
+    <p>Needs a full JDK 9+ (with <code>bin/javadoc</code>) as the module SDK.</p>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="UMLDoclet" displayType="BALLOON"/>
+        <projectConfigurable
+            parentId="tools"
+            id="dev.petalnet.umldoclet.settings"
+            displayName="UMLDoclet"
+            nonDefaultProject="true"
+            instance="dev.petalnet.umldoclet.UmlSettingsConfigurable"/>
+    </extensions>
+
+    <actions>
+        <action id="dev.petalnet.umldoclet.Generate"
+                class="dev.petalnet.umldoclet.GenerateUmlAction"
+                text="Generate UML (UMLDoclet)"
+                description="Generate PlantUML class diagrams for the selected Java files or packages with UMLDoclet">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>
