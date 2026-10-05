@@ -95,10 +95,10 @@ diagram in.
 ## Build from source
 
 ```
-./gradlew test buildPlugin verifyPluginStructure
+./gradlew test buildPlugin verifyPluginStructure verifyPlugin
 ```
 
-Needs JDK 21 (the Gradle toolchain). The plugin zip lands in `build/distributions/`. The
+Needs JDK 25 (the Gradle toolchain). The plugin zip lands in `build/distributions/`. The
 UMLDoclet jar is PetalNet's fork ([PetalNet/umldoclet](https://github.com/PetalNet/umldoclet)), built by
 [JitPack](https://jitpack.io/#PetalNet/umldoclet) from a pinned commit (`docletCommit` in
 `build.gradle.kts`) and checked against `docletSha256` by the `verifyDocletJar` task. It is

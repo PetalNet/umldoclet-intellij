@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # verifyPlugin downloads the target IDE and its plugins (~1 GB) on a cold cache.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -16,8 +18,14 @@ jobs:
           distribution: temurin
           java-version: "25"
       - uses: gradle/actions/setup-gradle@v4
-      - name: Test, build and verify plugin structure
-        run: ./gradlew test buildPlugin verifyPluginStructure --no-daemon
+      - name: Cache Plugin Verifier downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.pluginVerifier
+          key: plugin-verifier-${{ runner.os }}-${{ hashFiles('build.gradle.kts') }}
+          restore-keys: plugin-verifier-${{ runner.os }}-
+      - name: Test, build, verify plugin structure and IDE compatibility
+        run: ./gradlew test buildPlugin verifyPluginStructure verifyPlugin --no-daemon
       - name: Upload plugin zip
         if: always()
         uses: actions/upload-artifact@v4

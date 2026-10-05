@@ -140,6 +140,17 @@ object UmlDocletRunner {
         return result.firstOrNull { it.fileName.toString() == "package.puml" } ?: result.firstOrNull()
     }
 
+    /**
+     * Why the bundled doclet jar can't be used, or null when [jar] is a regular file. [jar] is null when the
+     * plugin's install folder couldn't be determined (its classes weren't loaded by a plugin class loader).
+     */
+    fun missingDocletMessage(jar: Path?): String? = when {
+        jar == null -> "Couldn't locate the plugin's install folder, so the bundled doclet/umldoclet.jar can't be found. " +
+            "Reinstall the plugin."
+        !Files.isRegularFile(jar) -> "Expected it at $jar. Reinstall the plugin."
+        else -> null
+    }
+
     /** The last [maxChars] of javadoc's output, for a notification balloon. */
     fun tail(output: String, maxChars: Int = 1500): String =
         if (output.length <= maxChars) output.trim() else "…" + output.takeLast(maxChars).trim()

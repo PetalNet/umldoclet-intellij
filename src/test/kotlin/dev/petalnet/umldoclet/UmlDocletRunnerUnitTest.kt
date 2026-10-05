@@ -111,4 +111,21 @@ class UmlDocletRunnerUnitTest {
             UmlDocletRunner.argFile(listOf(windows)),
         )
     }
+
+    @Test
+    fun `missingDocletMessage explains an unknown plugin folder, a missing jar, and accepts a real file`() {
+        val unknown = UmlDocletRunner.missingDocletMessage(null)!!
+        assertTrue(unknown, unknown.contains("Couldn't locate the plugin's install folder"))
+        assertFalse(unknown, unknown.contains("null"))
+
+        val absent = Paths.get(System.getProperty("java.io.tmpdir"), "no-such-dir-umldoclet", "umldoclet.jar")
+        assertEquals("Expected it at $absent. Reinstall the plugin.", UmlDocletRunner.missingDocletMessage(absent))
+
+        val real = java.nio.file.Files.createTempFile("umldoclet", ".jar")
+        try {
+            assertNull(UmlDocletRunner.missingDocletMessage(real))
+        } finally {
+            java.nio.file.Files.delete(real)
+        }
+    }
 }

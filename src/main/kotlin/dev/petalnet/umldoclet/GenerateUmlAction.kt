@@ -42,8 +42,9 @@ class GenerateUmlAction : DumbAwareAction() {
         FileDocumentManager.getInstance().saveAllDocuments()
 
         val docletJar = docletJar()
-        if (docletJar == null || !Files.isRegularFile(docletJar)) {
-            notify(project, "UMLDoclet jar missing", "Expected it at $docletJar. Reinstall the plugin.", NotificationType.ERROR)
+        val problem = UmlDocletRunner.missingDocletMessage(docletJar)
+        if (docletJar == null || problem != null) { // problem is never null when docletJar is
+            notify(project, "UMLDoclet jar missing", problem.orEmpty(), NotificationType.ERROR)
             return
         }
         // Immutable snapshot taken here on the EDT; the background task never touches the mutable settings state.
