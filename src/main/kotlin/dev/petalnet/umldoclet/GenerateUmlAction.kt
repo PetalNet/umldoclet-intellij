@@ -6,7 +6,6 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
-import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.fileEditor.FileDocumentManager
@@ -46,16 +45,17 @@ class GenerateUmlAction : DumbAwareAction() {
             notify(project, "UMLDoclet jar missing", "Expected it at $docletJar. Reinstall the plugin.", NotificationType.ERROR)
             return
         }
-        val settings = UmlSettings.getInstance(project).state
+        // Immutable snapshot taken here on the EDT; the background task never touches the mutable settings state.
+        val options = UmlSettings.snapshot(UmlSettings.getInstance(project).state)
         // Resolving walks the selected folders recursively: do it in the background task, not on the EDT.
-        GenerateTask(project, selection, docletJar, settings).queue()
+        GenerateTask(project, selection.toList(), docletJar, options).queue()
     }
 
     private class GenerateTask(
         private val targetProject: Project,
         private val selection: List<VirtualFile>,
         private val docletJar: Path,
-        private val settings: UmlSettings.State,
+        private val options: UmlOptions,
     ) : Task.Backgroundable(targetProject, "Generating UML diagrams (UMLDoclet)", true) {
 
         private lateinit var resolution: Resolved
@@ -64,11 +64,8 @@ class GenerateUmlAction : DumbAwareAction() {
         override fun run(indicator: ProgressIndicator) {
             indicator.isIndeterminate = true
             indicator.text = "Collecting the selected Java sources…"
-            // Non-blocking: yields to write actions (and restarts), and stops when the user cancels.
-            resolution = ReadAction.nonBlocking<Resolved> { UmlTargets.resolve(targetProject, selection, docletJar, settings) }
-                .expireWith(targetProject)
-                .wrapProgress(indicator)
-                .executeSynchronously()
+            // Non-blocking: yields to write actions (and restarts, re-validating the selection), stops on cancel.
+            resolution = UmlTargets.resolveInBackground(targetProject, selection, docletJar, options, indicator)
             val ok = resolution as? Resolved.Ok ?: return
             indicator.text = "Running javadoc with UMLDoclet…"
             result = UmlDocletRunner.run(ok.request, isCancelled = { indicator.isCanceled })

@@ -3,6 +3,11 @@ package dev.petalnet.umldoclet
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.progress.util.ProgressIndicatorBase
+import com.intellij.testFramework.PlatformTestUtil
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.projectRoots.Sdk
@@ -32,7 +37,7 @@ class UmlTargetsTest : LightJavaCodeInsightFixtureTestCase() {
 
     private val docletJar: Path = Paths.get("/irrelevant/umldoclet.jar")
     private val realJavadoc: Path = Paths.get(System.getProperty("java.home"), "bin", "javadoc")
-    private val settings = UmlSettings.State()
+    private val settings = UmlOptions()
 
     private fun resolve(selection: List<VirtualFile>, javadocFor: (Sdk) -> Path? = { realJavadoc }): Resolved =
         UmlTargets.resolve(project, selection, docletJar, settings, javadocFor)
@@ -194,37 +199,100 @@ class UmlTargetsTest : LightJavaCodeInsightFixtureTestCase() {
         }
     }
 
-    /** Runs [resolve] on a pooled thread inside a read action, under an already-cancelled progress indicator. */
-    private fun resolveCancelled(selection: List<VirtualFile>): Any =
-        ApplicationManager.getApplication().executeOnPooledThread<Any> {
-            ApplicationManager.getApplication().runReadAction<Any> {
-                val indicator = ProgressIndicatorBase()
-                try {
-                    ProgressManager.getInstance().runProcess<Resolved>({
-                        indicator.cancel()
-                        resolve(selection)
-                    }, indicator)
-                } catch (expected: ProcessCanceledException) {
-                    expected
+    /** Runs the production [UmlTargets.resolveInBackground] (ReadAction.nonBlocking) on a pooled thread. */
+    private fun inBackground(
+        selection: List<VirtualFile>,
+        indicator: ProgressIndicatorBase = ProgressIndicatorBase(),
+        beforeAttempt: () -> Unit = {},
+    ): Future<Any> = ApplicationManager.getApplication().executeOnPooledThread<Any> {
+        try {
+            UmlTargets.resolveInBackground(project, selection, docletJar, settings, indicator, { realJavadoc }, beforeAttempt)
+        } catch (pce: ProcessCanceledException) {
+            pce
+        }
+    }
+
+    /** Waits for [future] on the EDT without starving the event queue. */
+    private fun <T> await(future: Future<T>): T {
+        val deadline = System.currentTimeMillis() + 30_000
+        while (!future.isDone) {
+            check(System.currentTimeMillis() < deadline) { "background resolution did not finish" }
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            Thread.sleep(10)
+        }
+        return future.get()
+    }
+
+    fun testBackgroundResolutionResolves() {
+        val (person, job, deep) = demoFiles(addDemo())
+        val r = await(inBackground(listOf(person.parent)))
+        assertSameElements(ok(r as Resolved).request.files, paths(person, job, deep))
+    }
+
+    fun testBackgroundResolutionStopsWhenCancelled() {
+        val person = addDemo()
+        val indicator = ProgressIndicatorBase().apply { start(); cancel() }
+        val attempts = AtomicInteger()
+        val r = await(inBackground(listOf(person.parent), indicator) { attempts.incrementAndGet() })
+        assertTrue("expected ProcessCanceledException, got $r", r is ProcessCanceledException)
+        assertEquals("no attempt may run on a cancelled indicator", 0, attempts.get())
+    }
+
+    /**
+     * The first attempt spins inside the read action until a write action arrives. The non-blocking read action
+     * must give way (cancel the attempt), let the write run, and restart; the restarted attempt sees the write.
+     */
+    private fun runWithCompetingWrite(selection: List<VirtualFile>, write: () -> Unit): Pair<Any, Int> {
+        val attempts = AtomicInteger()
+        val firstAttemptRunning = CountDownLatch(1)
+        val future = inBackground(selection) {
+            if (attempts.incrementAndGet() == 1) {
+                firstAttemptRunning.countDown()
+                val deadline = System.currentTimeMillis() + 20_000
+                while (System.currentTimeMillis() < deadline) {
+                    ProgressManager.checkCanceled() // the pending write action cancels this attempt
+                    Thread.sleep(5)
                 }
             }
-        }.get()
+        }
+        assertTrue("first attempt never started", firstAttemptRunning.await(20, TimeUnit.SECONDS))
+        WriteAction.runAndWait<Throwable> { write() } // competes with the running read attempt
+        return await(future) to attempts.get()
+    }
 
-    fun testResolveHonoursCancellation() {
-        val person = addDemo()
-        // Resolution runs in a background read action; a cancelled indicator must stop it (ProcessCanceledException)
-        // rather than walk the whole folder. The platform's file-index calls check cancellation as well as the
-        // explicit check in the walk, so this asserts the property, not that particular line.
-        val walked = resolveCancelled(listOf(person.parent))
-        assertTrue("resolve ignored cancellation: $walked", walked is ProcessCanceledException)
-        assertEquals(3, ok(resolve(listOf(person.parent))).request.files.size)
+    fun testBackgroundResolutionRestartsAfterWriteAndSeesNewFile() {
+        val (person, job, deep) = demoFiles(addDemo())
+        lateinit var added: VirtualFile
+        val (r, attempts) = runWithCompetingWrite(listOf(person.parent)) {
+            added = person.parent.createChildData(this, "Added.java")
+            added.setBinaryContent("package demo; public class Added {}".toByteArray())
+        }
+        assertEquals("the write action must restart the read attempt", 2, attempts)
+        assertSameElements(ok(r as Resolved).request.files, paths(person, job, deep, added))
+    }
+
+    fun testBackgroundResolutionRevalidatesSelectionAfterWrite() {
+        val (person, job, _) = demoFiles(addDemo())
+        val (r, attempts) = runWithCompetingWrite(listOf(person, job)) { job.delete(this) }
+        assertEquals(2, attempts)
+        assertTrue("$r", r is Resolved.Problem)
+        assertTrue((r as Resolved.Problem).message, r.message.contains("Job.java no longer exists"))
+    }
+
+    fun testSettingsSnapshotIsImmutable() {
+        val state = UmlSettings.State()
+        val options = UmlSettings.snapshot(state)
+        state.includePrivate = false
+        state.methodDependencies = true
+        state.outputDir = "elsewhere"
+        assertEquals(UmlOptions(), options)
+        assertEquals(UmlOptions(outputDir = "elsewhere", includePrivate = false, methodDependencies = true), UmlSettings.snapshot(state))
+        assertEquals(UmlSettings.DEFAULT_OUTPUT, UmlSettings.snapshot(UmlSettings.State().apply { outputDir = " " }).outputDir)
     }
 
     fun testSettingsAreApplied() {
         val person = addDemo()
-        val custom = UmlSettings.State().apply {
-            outputDir = "docs/uml"; includePrivate = false; composition = true; methodDependencies = true
-        }
+        val custom = UmlOptions(outputDir = "docs/uml", includePrivate = false, composition = true, methodDependencies = true)
         val r = ok(UmlTargets.resolve(project, listOf(person), docletJar, custom) { realJavadoc })
         assertFalse(r.request.includePrivate)
         assertTrue(r.request.composition)
@@ -261,7 +329,7 @@ class UmlTargetsNoSdkTest : LightJavaCodeInsightFixtureTestCase() {
 
     fun testNoSdkIsProblem() {
         val person = myFixture.addFileToProject("demo/Person.java", "package demo; public class Person {}").virtualFile
-        val r = UmlTargets.resolve(project, listOf(person), Paths.get("/irrelevant.jar"), UmlSettings.State()) {
+        val r = UmlTargets.resolve(project, listOf(person), Paths.get("/irrelevant.jar"), UmlOptions()) {
             Paths.get(System.getProperty("java.home"), "bin", "javadoc")
         }
         assertTrue("$r", r is Resolved.Problem)

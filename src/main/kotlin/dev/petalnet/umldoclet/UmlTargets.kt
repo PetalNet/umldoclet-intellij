@@ -1,6 +1,8 @@
 package dev.petalnet.umldoclet
 
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.module.Module
+import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.projectRoots.JavaSdkType
@@ -42,7 +44,7 @@ object UmlTargets {
         project: Project,
         selection: List<VirtualFile>,
         docletJar: Path,
-        settings: UmlSettings.State,
+        settings: UmlOptions,
         javadocFor: (Sdk) -> Path? = ::defaultJavadoc,
     ): Resolved {
         val index = ProjectFileIndex.getInstance(project)
@@ -120,7 +122,7 @@ object UmlTargets {
             .distinct()
 
         val base = project.basePath?.let { Paths.get(it) } ?: return Resolved.Problem("Project has no base path.")
-        val out = base.resolve(settings.outputDir?.takeIf { it.isNotBlank() } ?: UmlSettings.DEFAULT_OUTPUT).normalize()
+        val out = base.resolve(settings.outputDir.takeIf { it.isNotBlank() } ?: UmlSettings.DEFAULT_OUTPUT).normalize()
 
         return Resolved.Ok(
             UmlRequest(
@@ -138,6 +140,38 @@ object UmlTargets {
             focusPackage,
         )
     }
+
+    /**
+     * [resolve] in a non-blocking read action, for a background thread: it yields to write actions and then
+     * restarts, and stops (ProcessCanceledException) when [indicator] is cancelled or the project is disposed.
+     * Every attempt first re-checks that the selected files still exist, because a write action between
+     * attempts may have deleted or moved them.
+     *
+     * @param beforeAttempt test seam, called at the start of every attempt inside the read action.
+     */
+    fun resolveInBackground(
+        project: Project,
+        selection: List<VirtualFile>,
+        docletJar: Path,
+        settings: UmlOptions,
+        indicator: ProgressIndicator,
+        javadocFor: (Sdk) -> Path? = ::defaultJavadoc,
+        beforeAttempt: () -> Unit = {},
+    ): Resolved = ReadAction.nonBlocking<Resolved> {
+        beforeAttempt()
+        val gone = selection.filterNot { it.isValid }
+        if (gone.isNotEmpty()) {
+            Resolved.Problem(
+                "The selection changed while collecting sources: ${gone.joinToString { it.name }} no longer exists. " +
+                    "Select the files again."
+            )
+        } else {
+            resolve(project, selection, docletJar, settings, javadocFor)
+        }
+    }
+        .expireWith(project)
+        .wrapProgress(indicator)
+        .executeSynchronously()
 
     private fun orderEntries(module: Module, includeTests: Boolean): OrderEnumerator =
         OrderEnumerator.orderEntries(module).recursively().withoutSdk().let { if (includeTests) it else it.productionOnly() }

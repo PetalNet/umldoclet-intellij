@@ -230,18 +230,26 @@ class UmlDocletRunnerTest {
     }
 
     /**
-     * End-to-end check of the argfile escaping with real javadoc: on POSIX a backslash is a legal file-name
-     * character, so a folder named like a Windows path segment proves javadoc un-escapes `\\` and spaces.
+     * End-to-end check of the argfile escaping with real javadoc.
+     * - Windows (the windows-latest CI job): a real drive-letter path with spaces, e.g.
+     *   `C:\Users\runneradmin\AppData\Local\Temp\junit123\John Doe src\demo\Person.java`.
+     * - POSIX: a backslash is a legal file-name character, so a folder named like a Windows path segment
+     *   proves javadoc un-escapes `\\` and keeps spaces.
      */
     @Test
     fun `argfile escaping round-trips through real javadoc`() {
-        org.junit.Assume.assumeFalse(System.getProperty("os.name").startsWith("Windows"))
-        val src = tmp.newFolder("C:\\Users\\John Doe src").toPath()
+        val windows = System.getProperty("os.name").startsWith("Windows")
+        val src = tmp.newFolder(if (windows) "John Doe src" else "C:\\Users\\John Doe src").toPath()
+        if (windows) {
+            assertTrue("expected a drive-letter path: $src", Regex("""^[A-Za-z]:\\.* .*""").matches(src.toString()))
+        }
         Files.createDirectories(src.resolve("demo"))
         src.resolve("demo/Person.java").writeText("package demo;\npublic class Person { private Job job; }\n")
         src.resolve("demo/Job.java").writeText("package demo;\npublic class Job { private String title; }\n")
         val out = tmp.newFolder("out-escaping").toPath()
-        runOk(request(out, listOf(src), javaFiles(src)))
+        val files = javaFiles(src)
+        assertTrue(files.all { it.toString().contains(' ') && it.toString().contains('\\') })
+        runOk(request(out, listOf(src), files))
         assertLine(packagePuml(out), """^\s*\S*Person --> \S*Job: job""")
     }
 }

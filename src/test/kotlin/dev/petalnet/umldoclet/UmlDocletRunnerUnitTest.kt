@@ -96,6 +96,8 @@ class UmlDocletRunnerUnitTest {
 
     @Test
     fun `argFile quotes each path and escapes backslashes and quotes`() {
+        // POSIX paths (a double quote is not a legal Windows file-name character); Windows is covered below.
+        org.junit.Assume.assumeFalse(System.getProperty("os.name").startsWith("Windows"))
         val text = UmlDocletRunner.argFile(listOf(Paths.get("/a b/C.java"), Paths.get("/x/We\\ird\"Name.java")))
         assertEquals("\"/a b/C.java\"\n\"/x/We\\\\ird\\\"Name.java\"\n", text)
     }

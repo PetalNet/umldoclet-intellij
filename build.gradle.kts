@@ -26,9 +26,9 @@ repositories {
 // shipped as a plain file next to the plugin (doclet/umldoclet.jar), not on the plugin classpath.
 val doclet: Configuration by configurations.creating { isTransitive = false }
 
-// Pinned to an immutable commit of https://github.com/PetalNet/umldoclet (PR #1 head until it is merged).
+// Pinned to an immutable commit of https://github.com/PetalNet/umldoclet main (PR #1 squash-merge).
 // The SHA-256 guards against JitPack serving a different jar for the same coordinates.
-val docletCommit = "ba783d6d663e7096c2b194057819c12e9ad86c47"
+val docletCommit = "f4ca3e0add29a34ded212891e69903231655b50c"
 val docletSha256 = "5c57922f13398ca59b318f674dba3c393fd683bb8011c05748cdd09577b149bb"
 
 dependencies {

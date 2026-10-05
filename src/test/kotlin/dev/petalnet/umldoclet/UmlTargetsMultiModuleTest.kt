@@ -18,7 +18,7 @@ class UmlTargetsMultiModuleTest : JavaCodeInsightFixtureTestCase() {
     private val javadoc = Paths.get(System.getProperty("java.home"), "bin", "javadoc")
 
     private fun resolve(selection: List<com.intellij.openapi.vfs.VirtualFile>): Resolved =
-        UmlTargets.resolve(project, selection, Paths.get("/irrelevant/umldoclet.jar"), UmlSettings.State()) { javadoc }
+        UmlTargets.resolve(project, selection, Paths.get("/irrelevant/umldoclet.jar"), UmlOptions()) { javadoc }
 
     fun testSelectionSpanningTwoModulesIsRejected() {
         val person = myFixture.addFileToProject("demo/Person.java", "package demo; public class Person {}").virtualFile
