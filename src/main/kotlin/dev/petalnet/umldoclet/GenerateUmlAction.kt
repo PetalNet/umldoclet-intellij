@@ -6,7 +6,6 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
-import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.fileEditor.FileDocumentManager
@@ -46,30 +45,42 @@ class GenerateUmlAction : DumbAwareAction() {
             notify(project, "UMLDoclet jar missing", "Expected it at $docletJar. Reinstall the plugin.", NotificationType.ERROR)
             return
         }
-        val settings = UmlSettings.getInstance(project).state
-        val resolved = ReadAction.compute<Resolved, RuntimeException> {
-            UmlTargets.resolve(project, selection, docletJar, settings)
-        }
-        when (resolved) {
-            is Resolved.Problem -> notify(project, "Can't generate UML", resolved.message, NotificationType.ERROR)
-            is Resolved.Ok -> GenerateTask(project, resolved).queue()
-        }
+        // Immutable snapshot taken here on the EDT; the background task never touches the mutable settings state.
+        val options = UmlSettings.snapshot(UmlSettings.getInstance(project).state)
+        // Resolving walks the selected folders recursively: do it in the background task, not on the EDT.
+        GenerateTask(project, selection.toList(), docletJar, options).queue()
     }
 
-    private class GenerateTask(project: Project, private val resolved: Resolved.Ok) :
-        Task.Backgroundable(project, "Generating UML diagrams (UMLDoclet)", true) {
+    private class GenerateTask(
+        private val targetProject: Project,
+        private val selection: List<VirtualFile>,
+        private val docletJar: Path,
+        private val options: UmlOptions,
+    ) : Task.Backgroundable(targetProject, "Generating UML diagrams (UMLDoclet)", true) {
 
+        private lateinit var resolution: Resolved
         private lateinit var result: UmlResult
 
         override fun run(indicator: ProgressIndicator) {
             indicator.isIndeterminate = true
+            indicator.text = "Collecting the selected Java sources…"
+            // Non-blocking: yields to write actions (and restarts, re-validating the selection), stops on cancel.
+            resolution = UmlTargets.resolveInBackground(targetProject, selection, docletJar, options, indicator)
+            val ok = resolution as? Resolved.Ok ?: return
             indicator.text = "Running javadoc with UMLDoclet…"
-            result = UmlDocletRunner.run(resolved.request, isCancelled = { indicator.isCanceled })
+            result = UmlDocletRunner.run(ok.request, isCancelled = { indicator.isCanceled })
             if (indicator.isCanceled) throw ProcessCanceledException()
         }
 
         override fun onSuccess() {
             val project = project ?: return
+            val resolved = when (val r = resolution) {
+                is Resolved.Problem -> {
+                    notify(project, "Can't generate UML", r.message, NotificationType.ERROR)
+                    return
+                }
+                is Resolved.Ok -> r
+            }
             val req = resolved.request
             if (!result.ok) {
                 LOG.warn("javadoc/UMLDoclet failed (exit ${result.exitCode}). Command: ${req.javadoc}\n${result.output}")

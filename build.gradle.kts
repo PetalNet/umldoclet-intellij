@@ -1,3 +1,4 @@
+import java.security.MessageDigest
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 
@@ -12,6 +13,12 @@ version = providers.gradleProperty("pluginVersion").get()
 
 repositories {
     mavenCentral()
+    // PetalNet's UMLDoclet fork (Map associations, --uml-method-dependencies), built from a commit by JitPack.
+    // Only that group may resolve from JitPack.
+    exclusiveContent {
+        forRepository { maven { url = uri("https://jitpack.io") } }
+        filter { includeGroup("com.github.PetalNet") }
+    }
     intellijPlatform { defaultRepositories() }
 }
 
@@ -19,8 +26,13 @@ repositories {
 // shipped as a plain file next to the plugin (doclet/umldoclet.jar), not on the plugin classpath.
 val doclet: Configuration by configurations.creating { isTransitive = false }
 
+// Pinned to an immutable commit of https://github.com/PetalNet/umldoclet main (PR #1 squash-merge).
+// The SHA-256 guards against JitPack serving a different jar for the same coordinates.
+val docletCommit = "f4ca3e0add29a34ded212891e69903231655b50c"
+val docletSha256 = "5c57922f13398ca59b318f674dba3c393fd683bb8011c05748cdd09577b149bb"
+
 dependencies {
-    doclet("nl.talsmasoftware:umldoclet:2.3.2")
+    doclet("com.github.PetalNet:umldoclet:$docletCommit")
     intellijPlatform {
         intellijIdeaCommunity("2024.2.6")
         bundledPlugin("com.intellij.java")
@@ -52,8 +64,21 @@ intellijPlatform {
     }
 }
 
+val verifyDocletJar by tasks.registering {
+    val jar: FileCollection = doclet
+    val expected = docletSha256
+    inputs.files(jar)
+    doLast {
+        val file = jar.singleFile
+        val actual = MessageDigest.getInstance("SHA-256")
+            .digest(file.readBytes()).joinToString("") { "%02x".format(it) }
+        check(actual == expected) { "UMLDoclet jar ${file.name} has SHA-256 $actual, expected $expected" }
+    }
+}
+
 tasks {
     prepareSandbox {
+        dependsOn(verifyDocletJar)
         // Lands in <sandbox>/plugins/<name>/doclet/umldoclet.jar and therefore in the distribution zip.
         from(doclet) {
             rename { "umldoclet.jar" }
@@ -61,6 +86,7 @@ tasks {
         }
     }
     test {
+        dependsOn(verifyDocletJar)
         // The runner test drives a real javadoc + UMLDoclet, exactly like the plugin does.
         systemProperty("umldoclet.jar", doclet.singleFile.absolutePath)
         // The runner test drops the generated package.puml here so humans can look at it.

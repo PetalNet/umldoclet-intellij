@@ -31,3 +31,23 @@ jobs:
         with:
           name: test-reports
           path: build/reports/tests/
+
+  # The runner E2E drives the real javadoc + UMLDoclet on Windows: argfile with a drive-letter path
+  # containing spaces (UmlDocletRunnerTest). The UmlTargets fixture tests stay on Linux.
+  windows-e2e:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Runner end-to-end tests on Windows
+        run: ./gradlew test --tests "dev.petalnet.umldoclet.UmlDocletRunnerTest" --tests "dev.petalnet.umldoclet.UmlDocletRunnerUnitTest" --no-daemon
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-reports
+          path: build/reports/tests/

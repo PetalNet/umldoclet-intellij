@@ -1,6 +1,9 @@
 package dev.petalnet.umldoclet
 
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.module.Module
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.projectRoots.JavaSdkType
 import com.intellij.openapi.projectRoots.Sdk
@@ -20,7 +23,10 @@ sealed interface Resolved {
     data class Problem(val message: String) : Resolved
 }
 
-/** Turns a Project-view / editor selection into a [UmlRequest]. Call inside a read action. */
+/**
+ * Turns a Project-view / editor selection into a [UmlRequest]. Call inside a read action; it walks the selected
+ * folders recursively, so use a background (non-blocking) read action, never the EDT.
+ */
 object UmlTargets {
     fun isCandidate(project: Project, file: VirtualFile): Boolean {
         val index = ProjectFileIndex.getInstance(project)
@@ -38,7 +44,7 @@ object UmlTargets {
         project: Project,
         selection: List<VirtualFile>,
         docletJar: Path,
-        settings: UmlSettings.State,
+        settings: UmlOptions,
         javadocFor: (Sdk) -> Path? = ::defaultJavadoc,
     ): Resolved {
         val index = ProjectFileIndex.getInstance(project)
@@ -48,6 +54,14 @@ object UmlTargets {
 
         val module: Module = index.getModuleForFile(picked.first())
             ?: return Resolved.Problem("${picked.first().name} isn't in a module.")
+        // One javadoc run has one SDK, sourcepath and classpath, so it can only serve one module.
+        val modules = picked.mapNotNull { index.getModuleForFile(it) }.distinct()
+        if (modules.size > 1) {
+            return Resolved.Problem(
+                "The selection spans several modules (${modules.joinToString { "'${it.name}'" }}). " +
+                    "Generate UML for one module at a time."
+            )
+        }
         val sdk = ModuleRootManager.getInstance(module).sdk ?: ProjectRootManager.getInstance(project).projectSdk
         if (sdk == null || sdk.sdkType !is JavaSdkType) {
             return Resolved.Problem("Module '${module.name}' has no Java SDK. Set one in File > Project Structure.")
@@ -59,51 +73,56 @@ object UmlTargets {
             )
         }
 
-        // Pass 1: directories become packages (a source root becomes its top-level packages plus the
-        // default-package .java files sitting directly in it); files are collected with their package.
-        val packages = linkedSetOf<String>()
-        val candidateFiles = linkedMapOf<Path, String>()
-        for (dir in picked.filter { it.isDirectory }) {
-            val pkg = packageIndex.getPackageNameByDirectory(dir) ?: continue
-            if (pkg.isNotEmpty()) {
-                packages += pkg
-            } else {
-                for (child in dir.children) {
-                    if (child.isDirectory) {
-                        packageIndex.getPackageNameByDirectory(child)?.takeIf { it.isNotEmpty() }?.let { packages += it }
-                    } else if (child.extension == "java") {
-                        candidateFiles[child.nioPath()] = ""
-                    }
+        // The documented set is exactly the selection: every .java file under a picked directory (recursively,
+        // skipping excluded folders) plus every picked file. Files are passed to javadoc by path, never as
+        // packages: `-subpackages` would pull in every class of that package from *any* source root on the
+        // sourcepath (tests, other modules, generated sources), which is not what was clicked.
+        // Test sources are only documented when the picked item itself is test source; a main folder that
+        // happens to contain a nested test root keeps its test files out.
+        val files = linkedSetOf<Path>()
+        val filePackages = linkedMapOf<Path, String>()
+        for (item in picked) {
+            val pickedIsTest = index.isInTestSourceContent(item)
+            fun accept(vf: VirtualFile) {
+                if (vf.isDirectory || vf.extension != "java") return
+                if (!index.isInSourceContent(vf) || index.isInTestSourceContent(vf) != pickedIsTest) return
+                val path = vf.nioPath()
+                if (files.add(path)) filePackages[path] = vf.parent?.let { packageIndex.getPackageNameByDirectory(it) }.orEmpty()
+            }
+            if (item.isDirectory) {
+                index.iterateContentUnderDirectory(item) { vf ->
+                    ProgressManager.checkCanceled() // runs in a cancellable background read action
+                    accept(vf)
+                    true
                 }
+            } else {
+                accept(item)
             }
         }
+        if (files.isEmpty()) return Resolved.Problem("No Java sources in the selection.")
+
         val pickedFiles = picked.filter { !it.isDirectory }
-        for (vf in pickedFiles) {
-            candidateFiles[vf.nioPath()] = vf.parent?.let { packageIndex.getPackageNameByDirectory(it) }.orEmpty()
-        }
-
-        // Pass 2: dedup. `-subpackages a` already covers `a.b`, and a file whose package (or a parent
-        // package) is selected would otherwise be documented twice.
-        val topPackages = packages.filter { p -> packages.none { q -> p.startsWith("$q.") } }
-        fun covered(pkg: String) = pkg.isNotEmpty() && topPackages.any { pkg == it || pkg.startsWith("$it.") }
-        val files = candidateFiles.filterNot { (_, pkg) -> covered(pkg) }.keys.toList()
-        if (topPackages.isEmpty() && files.isEmpty()) return Resolved.Problem("No Java sources in the selection.")
-
-        val soleFile = pickedFiles.singleOrNull()?.takeIf { picked.size == 1 && it.nioPath() in files }
+        val soleFile = pickedFiles.singleOrNull()?.takeIf { picked.size == 1 }
         val focusClass = soleFile?.nameWithoutExtension
-        val focusPackage = if (soleFile != null) candidateFiles[soleFile.nioPath()] else topPackages.firstOrNull()
+        val focusPackage = picked.first().let { first ->
+            val dir = if (first.isDirectory) first else first.parent
+            dir?.let { packageIndex.getPackageNameByDirectory(it) }?.takeIf { it.isNotEmpty() || soleFile != null }
+        } ?: filePackages.values.filter { it.isNotEmpty() } // a source root: its shallowest package
+            .minWithOrNull(compareBy<String>({ p -> p.count { it == '.' } }, { it }))
 
-        val deps = OrderEnumerator.orderEntries(module).recursively().withoutSdk()
-        val sourceRoots = deps.withoutLibraries().sources().roots
+        // The sourcepath only resolves references; it is not what gets documented. A main-source selection
+        // never puts test roots (or test-scoped dependencies) on it.
+        val includeTests = picked.any { index.isInTestSourceContent(it) }
+        val sourceRoots = sourceRoots(module, includeTests)
             .mapNotNull { it.fileSystem.getNioPath(it) } // skips non-disk roots (jars, test temp FS)
             .distinct()
-        val classpath = OrderEnumerator.orderEntries(module).recursively().withoutSdk().classes().pathsList.pathList
+        val classpath = orderEntries(module, includeTests).classes().pathsList.pathList
             .map { Paths.get(it) }
             .filter { Files.exists(it) }
             .distinct()
 
         val base = project.basePath?.let { Paths.get(it) } ?: return Resolved.Problem("Project has no base path.")
-        val out = base.resolve(settings.outputDir?.takeIf { it.isNotBlank() } ?: UmlSettings.DEFAULT_OUTPUT).normalize()
+        val out = base.resolve(settings.outputDir.takeIf { it.isNotBlank() } ?: UmlSettings.DEFAULT_OUTPUT).normalize()
 
         return Resolved.Ok(
             UmlRequest(
@@ -111,16 +130,58 @@ object UmlTargets {
                 docletJar = docletJar,
                 sourceRoots = sourceRoots,
                 classpath = classpath,
-                packages = topPackages,
-                files = files,
+                files = files.toList(),
                 outputDir = out,
                 includePrivate = settings.includePrivate,
                 composition = settings.composition,
+                methodDependencies = settings.methodDependencies,
             ),
             focusClass,
             focusPackage,
         )
     }
+
+    /**
+     * [resolve] in a non-blocking read action, for a background thread: it yields to write actions and then
+     * restarts, and stops (ProcessCanceledException) when [indicator] is cancelled or the project is disposed.
+     * Every attempt first re-checks that the selected files still exist, because a write action between
+     * attempts may have deleted or moved them.
+     *
+     * @param beforeAttempt test seam, called at the start of every attempt inside the read action.
+     */
+    fun resolveInBackground(
+        project: Project,
+        selection: List<VirtualFile>,
+        docletJar: Path,
+        settings: UmlOptions,
+        indicator: ProgressIndicator,
+        javadocFor: (Sdk) -> Path? = ::defaultJavadoc,
+        beforeAttempt: () -> Unit = {},
+    ): Resolved = ReadAction.nonBlocking<Resolved> {
+        beforeAttempt()
+        val gone = selection.filterNot { it.isValid }
+        if (gone.isNotEmpty()) {
+            Resolved.Problem(
+                "The selection changed while collecting sources: ${gone.joinToString { it.name }} no longer exists. " +
+                    "Select the files again."
+            )
+        } else {
+            resolve(project, selection, docletJar, settings, javadocFor)
+        }
+    }
+        .expireWith(project)
+        .wrapProgress(indicator)
+        .executeSynchronously()
+
+    private fun orderEntries(module: Module, includeTests: Boolean): OrderEnumerator =
+        OrderEnumerator.orderEntries(module).recursively().withoutSdk().let { if (includeTests) it else it.productionOnly() }
+
+    /**
+     * Source roots for javadoc's `-sourcepath`: the module's own roots and those of the modules it depends on.
+     * Test roots are only included when [includeTests] (the selection itself is test source).
+     */
+    fun sourceRoots(module: Module, includeTests: Boolean): List<VirtualFile> =
+        orderEntries(module, includeTests).withoutLibraries().sources().roots.toList()
 
     /** Like [VirtualFile.toNioPath] but tolerant of non-local file systems (test fixtures). */
     private fun VirtualFile.nioPath(): Path = fileSystem.getNioPath(this) ?: Paths.get(path)

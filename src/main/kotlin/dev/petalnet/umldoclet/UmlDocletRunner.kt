@@ -16,13 +16,13 @@ data class UmlRequest(
     val docletJar: Path,
     val sourceRoots: List<Path>,
     val classpath: List<Path>,
-    /** Packages to document, including their subpackages. */
-    val packages: List<String>,
-    /** Individual source files (default package, or files picked one by one). */
+    /** Exactly the source files to document (the selection). Passed by path, never as packages. */
     val files: List<Path>,
     val outputDir: Path,
     val includePrivate: Boolean,
     val composition: Boolean,
+    /** Pass `--uml-method-dependencies`: draw `A ..> B` for types used in method signatures. */
+    val methodDependencies: Boolean = false,
 )
 
 data class UmlResult(val exitCode: Int, val output: String, val pumlFiles: List<Path>) {
@@ -38,7 +38,15 @@ data class UmlResult(val exitCode: Int, val output: String, val pumlFiles: List<
 object UmlDocletRunner {
     const val DOCLET = "nl.talsmasoftware.umldoclet.UMLDoclet"
 
-    fun commandLine(req: UmlRequest, tempOut: Path): List<String> = buildList {
+    /**
+     * @param fileArgs how the documented files are passed; [run] uses a single `@argfile` so large selections
+     * don't hit the OS command-line length limit (Windows: 32K characters).
+     */
+    fun commandLine(
+        req: UmlRequest,
+        tempOut: Path,
+        fileArgs: List<String> = req.files.map { it.toString() },
+    ): List<String> = buildList {
         add(req.javadoc.toString())
         add("-quiet")
         add(if (req.includePrivate) "-private" else "-protected")
@@ -51,22 +59,28 @@ object UmlDocletRunner {
         add("--create-puml-files")
         addAll(listOf("--uml-image-format", "none"))
         addAll(listOf("--uml-encoding", "UTF-8"))
+        if (req.methodDependencies) add("--uml-method-dependencies")
         if (req.sourceRoots.isNotEmpty()) addAll(listOf("-sourcepath", req.sourceRoots.joinToString(File.pathSeparator)))
         if (req.classpath.isNotEmpty()) addAll(listOf("-classpath", req.classpath.joinToString(File.pathSeparator)))
-        if (req.packages.isNotEmpty()) addAll(listOf("-subpackages", req.packages.joinToString(":")))
-        req.files.forEach { add(it.toString()) }
+        addAll(fileArgs)
     }
+
+    /** javadoc `@argfile` content: one double-quoted path per line (backslashes and quotes escaped). */
+    fun argFile(files: List<Path>): String =
+        files.joinToString("\n", postfix = "\n") { "\"" + it.toString().replace("\\", "\\\\").replace("\"", "\\\"") + "\"" }
 
     /**
      * @param isCancelled polled while javadoc runs; returning true kills the process.
      */
     fun run(req: UmlRequest, isCancelled: () -> Boolean = { false }, timeoutSeconds: Long = 600): UmlResult {
-        require(req.packages.isNotEmpty() || req.files.isNotEmpty()) { "Nothing selected to diagram" }
+        require(req.files.isNotEmpty()) { "Nothing selected to diagram" }
         val temp = Files.createTempDirectory("umldoclet-")
         try {
             val log = temp.resolve("javadoc.log").toFile()
             val tempOut = temp.resolve("out")
-            val proc = ProcessBuilder(commandLine(req, tempOut))
+            val sources = temp.resolve("sources.txt")
+            sources.writeText(argFile(req.files))
+            val proc = ProcessBuilder(commandLine(req, tempOut, listOf("@$sources")))
                 .redirectErrorStream(true)
                 .redirectOutput(log)
                 .start()

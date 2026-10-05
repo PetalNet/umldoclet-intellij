@@ -22,10 +22,29 @@ class UmlSettings : SimplePersistentStateComponent<UmlSettings.State>(State()) {
 
         /** Rewrite field associations `A --> B` to composition `A *--> B`. */
         var composition by property(false)
+
+        /** Pass `--uml-method-dependencies`: dashed `A ..> B` arrows for types used in method signatures. */
+        var methodDependencies by property(false)
     }
 
     companion object {
         const val DEFAULT_OUTPUT = "build/uml"
+
+        /** Immutable copy of the settings, taken on the EDT before work is queued to a background thread. */
+        fun snapshot(state: State) = UmlOptions(
+            outputDir = state.outputDir?.takeIf { it.isNotBlank() } ?: DEFAULT_OUTPUT,
+            includePrivate = state.includePrivate,
+            composition = state.composition,
+            methodDependencies = state.methodDependencies,
+        )
         fun getInstance(project: Project): UmlSettings = project.service()
     }
 }
+
+/** Immutable snapshot of [UmlSettings.State]; safe to hand to background threads. */
+data class UmlOptions(
+    val outputDir: String = UmlSettings.DEFAULT_OUTPUT,
+    val includePrivate: Boolean = true,
+    val composition: Boolean = false,
+    val methodDependencies: Boolean = false,
+)
