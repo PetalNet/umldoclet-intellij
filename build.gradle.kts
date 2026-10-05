@@ -47,7 +47,7 @@ kotlin {
     compilerOptions {
         // 2024.2 bundles the Kotlin 1.9 stdlib; don't use newer language features.
         apiVersion.set(KotlinVersion.KOTLIN_1_9)
-        languageVersion.set(KotlinVersion.KOTLIN_1_9)
+        languageVersion.set(KotlinVersion.KOTLIN_2_0) // apiVersion stays 1.9 to match the stdlib bundled in 2024.2 (242)
     }
 }
 
