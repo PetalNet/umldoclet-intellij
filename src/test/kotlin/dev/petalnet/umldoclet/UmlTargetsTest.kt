@@ -1,8 +1,13 @@
 package dev.petalnet.umldoclet
 
+import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.projectRoots.Sdk
+import com.intellij.openapi.roots.ModuleRootManager
+import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.LightProjectDescriptor
+import com.intellij.testFramework.PsiTestUtil
+import com.intellij.testFramework.VfsTestUtil
 import com.intellij.testFramework.fixtures.DefaultLightProjectDescriptor
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import java.nio.file.Path
@@ -36,71 +41,164 @@ class UmlTargetsTest : LightJavaCodeInsightFixtureTestCase() {
         return myFixture.addFileToProject("demo/Person.java", "package demo; public class Person { private Job job; }").virtualFile
     }
 
-    fun testPackageDirectoryBecomesPackage() {
-        val person = addDemo()
+    private fun paths(vararg files: VirtualFile): List<Path> = files.map { Paths.get(it.path) }
+
+    private fun demoFiles(person: VirtualFile): Triple<VirtualFile, VirtualFile, VirtualFile> {
+        val job = person.parent.findChild("Job.java")!!
+        val deep = person.parent.findChild("sub")!!.findChild("Deep.java")!!
+        return Triple(person, job, deep)
+    }
+
+    fun testPackageDirectoryDocumentsExactlyTheFilesUnderIt() {
+        val (person, job, deep) = demoFiles(addDemo())
         val r = ok(resolve(listOf(person.parent)))
-        assertEquals(listOf("demo"), r.request.packages)
-        assertEmpty(r.request.files)
+        assertSameElements(r.request.files, paths(person, job, deep))
         assertNull(r.focusClass)
         assertEquals("demo", r.focusPackage)
         assertEquals(realJavadoc, r.request.javadoc)
         assertTrue(r.request.includePrivate)
         assertFalse(r.request.composition)
+        assertFalse(r.request.methodDependencies)
         assertEquals(Paths.get(project.basePath!!, "build", "uml").normalize(), r.request.outputDir)
+    }
+
+    fun testSubfolderDocumentsOnlyThatFolder() {
+        val (_, _, deep) = demoFiles(addDemo())
+        val r = ok(resolve(listOf(deep.parent)))
+        assertEquals(paths(deep), r.request.files)
+        assertEquals("demo.sub", r.focusPackage)
     }
 
     fun testSingleFileBecomesFileWithFocusClass() {
         val person = addDemo()
         val r = ok(resolve(listOf(person)))
-        assertEmpty(r.request.packages)
-        assertEquals(listOf(Paths.get(person.path)), r.request.files)
+        assertEquals(paths(person), r.request.files)
         assertEquals("Person", r.focusClass)
         assertEquals("demo", r.focusPackage)
     }
 
     fun testFileInsideSelectedPackageIsDeduped() {
-        val person = addDemo()
-        val deep = person.parent.findChild("sub")!!.findChild("Deep.java")!!
+        val (person, job, deep) = demoFiles(addDemo())
         val r = ok(resolve(listOf(person, person.parent, deep)))
-        assertEquals(listOf("demo"), r.request.packages)
-        assertEmpty(r.request.files)
+        assertSameElements(r.request.files, paths(person, job, deep))
+        assertEquals(3, r.request.files.size)
         assertNull(r.focusClass)
         assertEquals("demo", r.focusPackage)
     }
 
-    fun testNestedSelectedPackagesCollapse() {
-        val person = addDemo()
-        val sub = person.parent.findChild("sub")!!
-        val r = ok(resolve(listOf(sub, person.parent)))
-        assertEquals(listOf("demo"), r.request.packages)
+    fun testNestedSelectedFoldersAreDeduped() {
+        val (person, job, deep) = demoFiles(addDemo())
+        val r = ok(resolve(listOf(deep.parent, person.parent)))
+        assertSameElements(r.request.files, paths(person, job, deep))
+        assertEquals(3, r.request.files.size)
     }
 
     fun testTwoFilesHaveNoFocusClass() {
-        val person = addDemo()
-        val job = person.parent.findChild("Job.java")!!
+        val (person, job, _) = demoFiles(addDemo())
         val r = ok(resolve(listOf(person, job)))
-        assertEquals(2, r.request.files.size)
+        assertSameElements(r.request.files, paths(person, job))
         assertNull(r.focusClass)
     }
 
-    fun testSourceRootBecomesTopLevelPackagesPlusDefaultPackageFiles() {
-        val person = addDemo()
+    fun testSourceRootDocumentsEverythingInThatRoot() {
+        val (person, job, deep) = demoFiles(addDemo())
         val top = myFixture.addFileToProject("Top.java", "public class Top {}").virtualFile
         val root = person.parent.parent
         assertEquals(top.parent, root)
         val r = ok(resolve(listOf(root)))
-        assertEquals(listOf("demo"), r.request.packages)
-        assertEquals(listOf(Paths.get(top.path)), r.request.files)
+        assertSameElements(r.request.files, paths(person, job, deep, top))
         assertNull(r.focusClass)
         assertEquals("demo", r.focusPackage)
     }
 
+    /** Adds a test source root next to the fixture's `src` root, runs [block], then removes it again. */
+    private fun withTestRoot(
+        parent: VirtualFile = ModuleRootManager.getInstance(module).sourceRoots.single().parent,
+        block: (testRoot: VirtualFile, personTest: VirtualFile) -> Unit,
+    ) {
+        val testRoot = WriteAction.computeAndWait<VirtualFile, Throwable> {
+            parent.createChildDirectory(this, "testsrc")
+        }
+        try {
+            PsiTestUtil.addSourceRoot(module, testRoot, true)
+            val personTest = VfsTestUtil.createFile(
+                testRoot, "demo/PersonTest.java", "package demo; public class PersonTest { Person p; }"
+            )
+            VfsTestUtil.createFile(testRoot, "demo/sub/DeepTest.java", "package demo.sub; public class DeepTest {}")
+            block(testRoot, personTest)
+        } finally {
+            PsiTestUtil.removeSourceRoot(module, testRoot)
+            WriteAction.runAndWait<Throwable> { testRoot.delete(this) }
+        }
+    }
+
+    private fun assertNoTestClasses(r: Resolved.Ok) {
+        val names = r.request.files.map { it.fileName.toString() }
+        assertTrue("test classes leaked into $names", names.none { it.endsWith("Test.java") })
+    }
+
+    fun testMainSelectionsNeverIncludeTestSources() {
+        val (person, job, deep) = demoFiles(addDemo())
+        withTestRoot { testRoot, _ ->
+            val index = ProjectFileIndex.getInstance(project)
+            assertTrue(index.isInTestSourceContent(testRoot))
+            assertFalse(index.isInTestSourceContent(person))
+
+            // Same package name exists in the test root; only the main files may be documented.
+            val pkg = ok(resolve(listOf(person.parent)))
+            assertSameElements(pkg.request.files, paths(person, job, deep))
+            assertNoTestClasses(pkg)
+
+            val file = ok(resolve(listOf(person)))
+            assertEquals(paths(person), file.request.files)
+
+            val root = ok(resolve(listOf(person.parent.parent)))
+            assertSameElements(root.request.files, paths(person, job, deep))
+            assertNoTestClasses(root)
+
+            // The sourcepath for a main selection has no test roots either.
+            val mainRoots = UmlTargets.sourceRoots(module, includeTests = false)
+            assertFalse("$mainRoots", testRoot in mainRoots)
+            assertTrue("$mainRoots", person.parent.parent in mainRoots)
+        }
+    }
+
+    fun testTestRootNestedInsideAMainFolderStaysOut() {
+        val (person, job, deep) = demoFiles(addDemo())
+        withTestRoot(parent = person.parent) { testRoot, _ ->
+            assertTrue(ProjectFileIndex.getInstance(project).isInTestSourceContent(testRoot))
+            val pkg = ok(resolve(listOf(person.parent)))
+            assertSameElements(pkg.request.files, paths(person, job, deep))
+            assertNoTestClasses(pkg)
+        }
+    }
+
+    fun testTestSelectionDocumentsOnlyTestSources() {
+        addDemo()
+        withTestRoot { testRoot, personTest ->
+            val pkg = ok(resolve(listOf(personTest.parent)))
+            assertSameElements(
+                pkg.request.files.map { it.fileName.toString() }, listOf("PersonTest.java", "DeepTest.java")
+            )
+            val root = ok(resolve(listOf(testRoot)))
+            assertSameElements(root.request.files.map { it.fileName.toString() }, listOf("PersonTest.java", "DeepTest.java"))
+            val file = ok(resolve(listOf(personTest)))
+            assertEquals(paths(personTest), file.request.files)
+            assertEquals("PersonTest", file.focusClass)
+            // Test selections may resolve against both main and test roots.
+            assertTrue(testRoot in UmlTargets.sourceRoots(module, includeTests = true))
+        }
+    }
+
     fun testSettingsAreApplied() {
         val person = addDemo()
-        val custom = UmlSettings.State().apply { outputDir = "docs/uml"; includePrivate = false; composition = true }
+        val custom = UmlSettings.State().apply {
+            outputDir = "docs/uml"; includePrivate = false; composition = true; methodDependencies = true
+        }
         val r = ok(UmlTargets.resolve(project, listOf(person), docletJar, custom) { realJavadoc })
         assertFalse(r.request.includePrivate)
         assertTrue(r.request.composition)
+        assertTrue(r.request.methodDependencies)
         assertEquals(Paths.get(project.basePath!!, "docs", "uml").normalize(), r.request.outputDir)
     }
 

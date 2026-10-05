@@ -22,6 +22,9 @@ class UmlSettings : SimplePersistentStateComponent<UmlSettings.State>(State()) {
 
         /** Rewrite field associations `A --> B` to composition `A *--> B`. */
         var composition by property(false)
+
+        /** Pass `--uml-method-dependencies`: dashed `A ..> B` arrows for types used in method signatures. */
+        var methodDependencies by property(false)
     }
 
     companion object {

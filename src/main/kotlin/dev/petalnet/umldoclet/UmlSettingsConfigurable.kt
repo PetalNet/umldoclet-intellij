@@ -35,6 +35,15 @@ class UmlSettingsConfigurable(private val project: Project) : BoundConfigurable(
                             "dependency arrows are left alone."
                     )
             }
+            row {
+                checkBox("Draw method dependencies (..>)")
+                    .bindSelected(state::methodDependencies)
+                    .comment(
+                        "Adds a dashed dependency A ..> B in package diagrams when a visible method of A takes or " +
+                            "returns B (also inside List, Optional, Map, arrays). Skipped when A already has an " +
+                            "association to B. Off by default: it can make diagrams busy."
+                    )
+            }
         }
     }
 }

@@ -1,7 +1,9 @@
 package dev.petalnet.umldoclet
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Paths
 
@@ -71,5 +73,30 @@ class UmlDocletRunnerUnitTest {
         assertEquals(101, t.length)
         assertEquals("END", t.takeLast(3))
         assertEquals("short", UmlDocletRunner.tail("short\n", 100))
+    }
+
+    private fun req(files: List<java.nio.file.Path>, methodDependencies: Boolean) = UmlRequest(
+        javadoc = Paths.get("/jdk/bin/javadoc"), docletJar = Paths.get("/doclet.jar"),
+        sourceRoots = listOf(Paths.get("/p/src/main/java")), classpath = emptyList(),
+        files = files, outputDir = Paths.get("/p/build/uml"),
+        includePrivate = true, composition = false, methodDependencies = methodDependencies,
+    )
+
+    @Test
+    fun `commandLine passes files, never -subpackages, and the method dependencies flag only when set`() {
+        val file = Paths.get("/p/src/main/java/demo/Person.java")
+        val off = UmlDocletRunner.commandLine(req(listOf(file), false), Paths.get("/tmp/out"))
+        assertFalse(off.toString(), off.contains("-subpackages"))
+        assertFalse(off.toString(), off.contains("--uml-method-dependencies"))
+        assertEquals(file.toString(), off.last())
+        val on = UmlDocletRunner.commandLine(req(listOf(file), true), Paths.get("/tmp/out"), listOf("@/tmp/sources.txt"))
+        assertTrue(on.toString(), on.contains("--uml-method-dependencies"))
+        assertEquals("@/tmp/sources.txt", on.last())
+    }
+
+    @Test
+    fun `argFile quotes each path and escapes backslashes and quotes`() {
+        val text = UmlDocletRunner.argFile(listOf(Paths.get("/a b/C.java"), Paths.get("/x/We\\ird\"Name.java")))
+        assertEquals("\"/a b/C.java\"\n\"/x/We\\\\ird\\\"Name.java\"\n", text)
     }
 }
