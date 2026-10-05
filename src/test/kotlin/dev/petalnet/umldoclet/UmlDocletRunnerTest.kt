@@ -168,6 +168,9 @@ class UmlDocletRunnerTest {
         pkg.resolve("CustomerId.java").writeText("package shop;\npublic class CustomerId { private int value; }\n")
         pkg.resolve("Purchasable.java").writeText("package shop;\npublic interface Purchasable { double price(); }\n")
         pkg.resolve("Receipt.java").writeText("package shop;\npublic class Receipt { private double total; }\n")
+        pkg.resolve("Ledger.java").writeText(
+            "package shop;\nimport java.util.*;\npublic class Ledger { private Map<String, List<Receipt>> history; }\n"
+        )
         return src
     }
 
@@ -192,6 +195,8 @@ class UmlDocletRunnerTest {
         assertLine(puml, """^\s*\S*GameHub --> "\*" \S*CustomerId: byId key""")
         // Map<Integer, String>: neither side is in the package, so the field stays a field.
         assertLine(puml, """-names: Map<Integer, String>""")
+        // Nested containers are unwrapped (needs the reviewed fork head, not the first PR commit).
+        assertLine(puml, """^\s*\S*Ledger --> "\*" \S*Receipt: history""")
         // Method dependencies are off by default.
         assertNoLine(puml, """\.\.>""")
     }
@@ -222,5 +227,21 @@ class UmlDocletRunnerTest {
         assertFalse(puml, puml.contains("Unrelated"))
         assertFalse(puml, puml.contains("PersonTest"))
         assertTrue(allFiles(out).none { it.fileName.toString().startsWith("Unrelated") || it.fileName.toString().startsWith("PersonTest") })
+    }
+
+    /**
+     * End-to-end check of the argfile escaping with real javadoc: on POSIX a backslash is a legal file-name
+     * character, so a folder named like a Windows path segment proves javadoc un-escapes `\\` and spaces.
+     */
+    @Test
+    fun `argfile escaping round-trips through real javadoc`() {
+        org.junit.Assume.assumeFalse(System.getProperty("os.name").startsWith("Windows"))
+        val src = tmp.newFolder("C:\\Users\\John Doe src").toPath()
+        Files.createDirectories(src.resolve("demo"))
+        src.resolve("demo/Person.java").writeText("package demo;\npublic class Person { private Job job; }\n")
+        src.resolve("demo/Job.java").writeText("package demo;\npublic class Job { private String title; }\n")
+        val out = tmp.newFolder("out-escaping").toPath()
+        runOk(request(out, listOf(src), javaFiles(src)))
+        assertLine(packagePuml(out), """^\s*\S*Person --> \S*Job: job""")
     }
 }

@@ -99,4 +99,14 @@ class UmlDocletRunnerUnitTest {
         val text = UmlDocletRunner.argFile(listOf(Paths.get("/a b/C.java"), Paths.get("/x/We\\ird\"Name.java")))
         assertEquals("\"/a b/C.java\"\n\"/x/We\\\\ird\\\"Name.java\"\n", text)
     }
+
+    @Test
+    fun `argFile escapes a Windows drive-letter path with spaces`() {
+        // String-level: on Linux this is a single file name, but toString() keeps the backslashes as on Windows.
+        val windows = Paths.get("C:\\Users\\John Doe\\My Project\\src\\main\\java\\demo\\Person.java")
+        assertEquals(
+            "\"C:\\\\Users\\\\John Doe\\\\My Project\\\\src\\\\main\\\\java\\\\demo\\\\Person.java\"\n",
+            UmlDocletRunner.argFile(listOf(windows)),
+        )
+    }
 }

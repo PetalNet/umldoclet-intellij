@@ -28,8 +28,8 @@ val doclet: Configuration by configurations.creating { isTransitive = false }
 
 // Pinned to an immutable commit of https://github.com/PetalNet/umldoclet (PR #1 head until it is merged).
 // The SHA-256 guards against JitPack serving a different jar for the same coordinates.
-val docletCommit = "a697cffca0e09e741b0599d0413f214e94b947ee"
-val docletSha256 = "678f03a8221e8b8eeb53d18da319f5390230b500fbdde9a1634dc03d44de3a6e"
+val docletCommit = "ba783d6d663e7096c2b194057819c12e9ad86c47"
+val docletSha256 = "5c57922f13398ca59b318f674dba3c393fd683bb8011c05748cdd09577b149bb"
 
 dependencies {
     doclet("com.github.PetalNet:umldoclet:$docletCommit")

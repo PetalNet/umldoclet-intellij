@@ -1,6 +1,10 @@
 package dev.petalnet.umldoclet
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.WriteAction
+import com.intellij.openapi.progress.util.ProgressIndicatorBase
+import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.projectRoots.Sdk
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -188,6 +192,32 @@ class UmlTargetsTest : LightJavaCodeInsightFixtureTestCase() {
             // Test selections may resolve against both main and test roots.
             assertTrue(testRoot in UmlTargets.sourceRoots(module, includeTests = true))
         }
+    }
+
+    /** Runs [resolve] on a pooled thread inside a read action, under an already-cancelled progress indicator. */
+    private fun resolveCancelled(selection: List<VirtualFile>): Any =
+        ApplicationManager.getApplication().executeOnPooledThread<Any> {
+            ApplicationManager.getApplication().runReadAction<Any> {
+                val indicator = ProgressIndicatorBase()
+                try {
+                    ProgressManager.getInstance().runProcess<Resolved>({
+                        indicator.cancel()
+                        resolve(selection)
+                    }, indicator)
+                } catch (expected: ProcessCanceledException) {
+                    expected
+                }
+            }
+        }.get()
+
+    fun testResolveHonoursCancellation() {
+        val person = addDemo()
+        // Resolution runs in a background read action; a cancelled indicator must stop it (ProcessCanceledException)
+        // rather than walk the whole folder. The platform's file-index calls check cancellation as well as the
+        // explicit check in the walk, so this asserts the property, not that particular line.
+        val walked = resolveCancelled(listOf(person.parent))
+        assertTrue("resolve ignored cancellation: $walked", walked is ProcessCanceledException)
+        assertEquals(3, ok(resolve(listOf(person.parent))).request.files.size)
     }
 
     fun testSettingsAreApplied() {

@@ -1,6 +1,7 @@
 package dev.petalnet.umldoclet
 
 import com.intellij.openapi.module.Module
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.projectRoots.JavaSdkType
 import com.intellij.openapi.projectRoots.Sdk
@@ -20,7 +21,10 @@ sealed interface Resolved {
     data class Problem(val message: String) : Resolved
 }
 
-/** Turns a Project-view / editor selection into a [UmlRequest]. Call inside a read action. */
+/**
+ * Turns a Project-view / editor selection into a [UmlRequest]. Call inside a read action; it walks the selected
+ * folders recursively, so use a background (non-blocking) read action, never the EDT.
+ */
 object UmlTargets {
     fun isCandidate(project: Project, file: VirtualFile): Boolean {
         val index = ProjectFileIndex.getInstance(project)
@@ -48,6 +52,14 @@ object UmlTargets {
 
         val module: Module = index.getModuleForFile(picked.first())
             ?: return Resolved.Problem("${picked.first().name} isn't in a module.")
+        // One javadoc run has one SDK, sourcepath and classpath, so it can only serve one module.
+        val modules = picked.mapNotNull { index.getModuleForFile(it) }.distinct()
+        if (modules.size > 1) {
+            return Resolved.Problem(
+                "The selection spans several modules (${modules.joinToString { "'${it.name}'" }}). " +
+                    "Generate UML for one module at a time."
+            )
+        }
         val sdk = ModuleRootManager.getInstance(module).sdk ?: ProjectRootManager.getInstance(project).projectSdk
         if (sdk == null || sdk.sdkType !is JavaSdkType) {
             return Resolved.Problem("Module '${module.name}' has no Java SDK. Set one in File > Project Structure.")
@@ -76,7 +88,11 @@ object UmlTargets {
                 if (files.add(path)) filePackages[path] = vf.parent?.let { packageIndex.getPackageNameByDirectory(it) }.orEmpty()
             }
             if (item.isDirectory) {
-                index.iterateContentUnderDirectory(item) { vf -> accept(vf); true }
+                index.iterateContentUnderDirectory(item) { vf ->
+                    ProgressManager.checkCanceled() // runs in a cancellable background read action
+                    accept(vf)
+                    true
+                }
             } else {
                 accept(item)
             }

@@ -60,6 +60,9 @@ Project view: select one or more Java files, packages or a source folder, right-
 - A source root diagrams the sources in that root only.
 - A single file diagrams that file only and opens `<Class>.puml`.
 - Test sources are only diagrammed when the selection itself is inside a test root.
+- A selection must stay within one module (one javadoc run has one SDK, sourcepath and classpath);
+  a selection spanning modules is rejected with a message. Collecting the sources runs in the
+  background and can be cancelled.
 
 Output: `build/uml/<package path>/package.puml` (package overview) and one `<Class>.puml` per type.
 A notification says how many diagrams were written; failures show the tail of javadoc's output and

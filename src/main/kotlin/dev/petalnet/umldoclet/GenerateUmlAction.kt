@@ -47,29 +47,43 @@ class GenerateUmlAction : DumbAwareAction() {
             return
         }
         val settings = UmlSettings.getInstance(project).state
-        val resolved = ReadAction.compute<Resolved, RuntimeException> {
-            UmlTargets.resolve(project, selection, docletJar, settings)
-        }
-        when (resolved) {
-            is Resolved.Problem -> notify(project, "Can't generate UML", resolved.message, NotificationType.ERROR)
-            is Resolved.Ok -> GenerateTask(project, resolved).queue()
-        }
+        // Resolving walks the selected folders recursively: do it in the background task, not on the EDT.
+        GenerateTask(project, selection, docletJar, settings).queue()
     }
 
-    private class GenerateTask(project: Project, private val resolved: Resolved.Ok) :
-        Task.Backgroundable(project, "Generating UML diagrams (UMLDoclet)", true) {
+    private class GenerateTask(
+        private val targetProject: Project,
+        private val selection: List<VirtualFile>,
+        private val docletJar: Path,
+        private val settings: UmlSettings.State,
+    ) : Task.Backgroundable(targetProject, "Generating UML diagrams (UMLDoclet)", true) {
 
+        private lateinit var resolution: Resolved
         private lateinit var result: UmlResult
 
         override fun run(indicator: ProgressIndicator) {
             indicator.isIndeterminate = true
+            indicator.text = "Collecting the selected Java sources…"
+            // Non-blocking: yields to write actions (and restarts), and stops when the user cancels.
+            resolution = ReadAction.nonBlocking<Resolved> { UmlTargets.resolve(targetProject, selection, docletJar, settings) }
+                .expireWith(targetProject)
+                .wrapProgress(indicator)
+                .executeSynchronously()
+            val ok = resolution as? Resolved.Ok ?: return
             indicator.text = "Running javadoc with UMLDoclet…"
-            result = UmlDocletRunner.run(resolved.request, isCancelled = { indicator.isCanceled })
+            result = UmlDocletRunner.run(ok.request, isCancelled = { indicator.isCanceled })
             if (indicator.isCanceled) throw ProcessCanceledException()
         }
 
         override fun onSuccess() {
             val project = project ?: return
+            val resolved = when (val r = resolution) {
+                is Resolved.Problem -> {
+                    notify(project, "Can't generate UML", r.message, NotificationType.ERROR)
+                    return
+                }
+                is Resolved.Ok -> r
+            }
             val req = resolved.request
             if (!result.ok) {
                 LOG.warn("javadoc/UMLDoclet failed (exit ${result.exitCode}). Command: ${req.javadoc}\n${result.output}")
