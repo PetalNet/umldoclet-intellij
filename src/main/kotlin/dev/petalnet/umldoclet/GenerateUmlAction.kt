@@ -1,6 +1,7 @@
 package dev.petalnet.umldoclet
 
 import com.intellij.ide.plugins.PluginManagerCore
+import com.intellij.ide.plugins.cl.PluginAwareClassLoader
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread
@@ -124,7 +125,6 @@ class GenerateUmlAction : DumbAwareAction() {
 
     companion object {
         private val LOG = logger<GenerateUmlAction>()
-        const val PLUGIN_ID = "dev.petalnet.umldoclet"
         const val PLANTUML_PLUGIN_ID = "PlantUML integration"
         const val NOTIFICATION_GROUP = "UMLDoclet"
 
@@ -134,10 +134,14 @@ class GenerateUmlAction : DumbAwareAction() {
 
         /** `<plugin dir>/doclet/umldoclet.jar`, shipped next to the plugin's lib/ (see build.gradle.kts). */
         fun docletJar(): Path? =
-            PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID))?.pluginPath?.resolve("doclet")?.resolve("umldoclet.jar")
+            // PluginManagerCore.getPlugin is internal API since 2026.x; our own class loader knows our descriptor.
+            (GenerateUmlAction::class.java.classLoader as? PluginAwareClassLoader)?.pluginDescriptor
+                ?.pluginPath?.resolve("doclet")?.resolve("umldoclet.jar")
 
-        fun plantUmlPluginEnabled(): Boolean =
-            PluginManagerCore.getPlugin(PluginId.getId(PLANTUML_PLUGIN_ID))?.isEnabled == true
+        fun plantUmlPluginEnabled(): Boolean {
+            val id = PluginId.getId(PLANTUML_PLUGIN_ID)
+            return PluginManagerCore.isPluginInstalled(id) && !PluginManagerCore.isDisabled(id)
+        }
 
         fun notify(project: Project, title: String, content: String, type: NotificationType) {
             NotificationGroupManager.getInstance()

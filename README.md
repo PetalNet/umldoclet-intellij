@@ -46,7 +46,7 @@ Grab `umldoclet-intellij-<version>.zip` from the
 [latest release](https://github.com/PetalNet/umldoclet-intellij/releases/latest), then
 **Settings > Plugins > (gear icon) > Install Plugin from Disk…** and pick the zip. Restart when asked.
 
-Requirements: IntelliJ IDEA 2024.2 or newer (Community is fine) and a **full JDK 9+** as the
+Requirements: IntelliJ IDEA 2026.2 or newer and a **full JDK 9+** as the
 module/project SDK. A JRE has no `bin/javadoc`; the plugin tells you if that is the case.
 
 ## Use

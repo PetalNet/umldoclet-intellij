@@ -4,7 +4,7 @@ import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 
 plugins {
     id("java")
-    id("org.jetbrains.kotlin.jvm") version "2.2.20"
+    id("org.jetbrains.kotlin.jvm") version "2.4.20"
     id("org.jetbrains.intellij.platform") version "2.19.0"
 }
 
@@ -34,7 +34,8 @@ val docletSha256 = "5c57922f13398ca59b318f674dba3c393fd683bb8011c05748cdd09577b1
 dependencies {
     doclet("com.github.PetalNet:umldoclet:$docletCommit")
     intellijPlatform {
-        intellijIdeaCommunity("2024.2.6")
+        // 2025.3+ ships a single unified IntelliJ IDEA distribution (no separate Community build).
+        intellijIdea("2026.2.3")
         bundledPlugin("com.intellij.java")
         testFramework(TestFrameworkType.Platform)
         testFramework(TestFrameworkType.Plugin.Java)
@@ -43,11 +44,12 @@ dependencies {
 }
 
 kotlin {
-    jvmToolchain(21)
+    // IntelliJ Platform 2026.2 (262) requires Java 25.
+    jvmToolchain(25)
     compilerOptions {
-        // 2024.2 bundles the Kotlin 1.9 stdlib; don't use newer language features.
-        apiVersion.set(KotlinVersion.KOTLIN_1_9)
-        languageVersion.set(KotlinVersion.KOTLIN_2_0) // apiVersion stays 1.9 to match the stdlib bundled in 2024.2 (242)
+        // Match the Kotlin stdlib bundled in 2026.2 (2.4.0).
+        apiVersion.set(KotlinVersion.KOTLIN_2_4)
+        languageVersion.set(KotlinVersion.KOTLIN_2_4)
     }
 }
 
@@ -55,12 +57,12 @@ intellijPlatform {
     pluginConfiguration {
         version = project.version.toString()
         ideaVersion {
-            sinceBuild = "242"
+            sinceBuild = "262"
             untilBuild = provider { null }
         }
     }
     pluginVerification {
-        ides { recommended() }
+        ides { current() }
     }
 }
 
@@ -87,6 +89,10 @@ tasks {
     }
     test {
         dependsOn(verifyDocletJar)
+        // IDEA 2026.2.2+ (unified distribution): the bundled Ultimate plugin's post-startup activity shares an
+        // obfuscated class name with lib/product-backend.jar, so every fixture project open logs a PluginException
+        // and fails the test. Load only what the tests need. See JetBrains/intellij-platform-gradle-plugin#2261.
+        systemProperty("idea.load.plugins.id", "dev.petalnet.umldoclet,com.intellij.java")
         // The runner test drives a real javadoc + UMLDoclet, exactly like the plugin does.
         systemProperty("umldoclet.jar", doclet.singleFile.absolutePath)
         // The runner test drops the generated package.puml here so humans can look at it.

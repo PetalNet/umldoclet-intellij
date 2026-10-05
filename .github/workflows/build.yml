@@ -14,7 +14,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "25"
       - uses: gradle/actions/setup-gradle@v4
       - name: Test, build and verify plugin structure
         run: ./gradlew test buildPlugin verifyPluginStructure --no-daemon
@@ -41,7 +41,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "25"
       - uses: gradle/actions/setup-gradle@v4
       - name: Runner end-to-end tests on Windows
         run: ./gradlew test --tests "dev.petalnet.umldoclet.UmlDocletRunnerTest" --tests "dev.petalnet.umldoclet.UmlDocletRunnerUnitTest" --no-daemon
